@@ -14,5 +14,7 @@ In my personal experience I have tried  different photo management tools in the 
 
 So I decided to invest some time into developing a photo mangagement toolset to accomplish this task and make it easy in the future.
 
+## Current status ##
 
+the code is very much work in progress and is not fully functional yet. It can be however used as a starting point for tinkering. Updates will follow along the way.
 
