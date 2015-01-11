@@ -87,12 +87,12 @@ class File(object):
         self.fName = fName # full name, including path
         self.path, self.name = os.path.split(fName) # set path and name
         
-        self.info = {'ext': os.path.splitext(self.fName)[1].lower(),
+        self._info = {'ext': os.path.splitext(self.fName)[1].lower(),
                      'created':dt.datetime.fromtimestamp(os.path.getctime(fName)),
                      'size': os.path.getsize(fName),
                      'hash': self.md5() if USE_HASH else None} #
         
-        if self.info['ext'] in imageTypes: # parse further if it is an image
+        if self._info['ext'] in imageTypes: # parse further if it is an image
             
                       
             img = Image.open(fName)
@@ -130,18 +130,18 @@ class File(object):
         
         mapping = {'name':os.path.split(self.fName)[1],
                    'path':self.path if not root else os.path.relpath(self.path,root),
-                   'dateTaken':time2str(self.info['dateTaken']) if 'dateTaken' in self.info.keys() else '',
-                   'camera':self.info['camera'] if 'camera' in self.info.keys() else '',
-                   'created':time2str(self.info['created']),
-                   'size': self.info['size'],
-                   'ext': self.info['ext'],
-                   'hash': self.info['hash']}
+                   'dateTaken':time2str(self._info['dateTaken']) if 'dateTaken' in self._info.keys() else '',
+                   'camera':self._info['camera'] if 'camera' in self._info.keys() else '',
+                   'created':time2str(self._info['created']),
+                   'size': self._info['size'],
+                   'ext': self._info['ext'],
+                   'hash': self._info['hash']}
         return mapping         
     
     def __repr__(self):
         
         s =    'Photo: %s\n' % (str(self.fName))
-        for k,v in self.info.iteritems():
+        for k,v in self.info().iteritems():
             s+= '[%s]:%s\n' % (str(k),str(v))
         return  s
         
@@ -428,6 +428,9 @@ if __name__ == '__main__':
 #        M.scan()
         
 #-----------test code
-    root = r'E:\PRIVATE\Photo\Photo'
-    M = Manager(root,'index.db')
-    M.export('migration_GOOD - Copy.ini','migration.log')
+    root = r'D:\Photo_new'
+    M = Manager(root,'photos_new.db')
+    
+    M.resetDb()
+    M.scan()
+    #M.export('migration_GOOD - Copy.ini','migration.log')
