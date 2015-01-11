@@ -1,6 +1,7 @@
 __author__ = 'Jev Kuznetsov'
 
 import os
+from shutil import copyfile
 import Image, ExifTags
 import hashlib
 import datetime as dt
@@ -23,6 +24,15 @@ tagCodes = {v: k for k, v in ExifTags.TAGS.iteritems() } # get a reverse diction
 # used time formats
 timeFormats = {'filename': '%Y%m%d_%H%M%S',
                'sql':'%Y-%m-%d %H:%M:%S'}
+
+class TxtFile(file):
+    #subclass file to have a more convienient use of writeline
+    def __init__(self, name, mode = 'r'):
+        self = file.__init__(self, name, mode)
+
+    def writeln(self, string):
+        self.writelines(string + '\n')
+        return None               
                
 def humanReadaleSize(num, suffix='B'):
     for unit in ['','K','M','G','T','P','E','Z']:
@@ -112,8 +122,8 @@ class File(object):
             
         return hsh
     
-    def sqlData(self, root=None):
-        """ create a list ready for insertion to sql database 
+    def info(self, root=None):
+        """ create a dict ready for insertion to sql database 
             Parameters:
                 root: if provided, file path will be relative to the root.
         """
@@ -126,7 +136,6 @@ class File(object):
                    'size': self.info['size'],
                    'ext': self.info['ext'],
                    'hash': self.info['hash']}
-        #return None          
         return mapping         
     
     def __repr__(self):
@@ -181,9 +190,18 @@ class Manager(object):
     
     def sql(self,query):
         """ execute sql query and return result """
+        self.log.debug('Executing sql: '+query)
         self.cur.execute(query)
         data = self.cur.fetchall()
         return data
+    
+    
+    def images(self,path):
+        """ get images from path. Path must be relative to self.root """
+        sql = "SELECT name FROM files WHERE path='%s' AND ext in (%s) " % (path.replace("'","''"), ','.join(["'%s'" % s for s in imageTypes]))
+        res = self.sql(sql)
+        
+        return [r[0] for r in res]
     
     def folders(self):
         """ return list of folders in database """
@@ -260,8 +278,7 @@ class Manager(object):
         p.set('Export','dest',None)
         p.set('Export','mapping',mapping)
         
-        if not os.path.isabs(fName):
-            fName = os.path.join(self.root,fName)        
+         
         
         self.log.info( 'Writing '+fName)
         with open(fName,'w') as fid:
@@ -271,7 +288,7 @@ class Manager(object):
     def scan(self):
         """ scan directory tree, adding data to database """
         
-        #TODO: check if path has already been added        
+        #TODO: make update possible. Now only full scan is done, sometimes slow    
         
        
         for path,dirs,files in os.walk(self.root):
@@ -290,7 +307,7 @@ class Manager(object):
                     print '?',
                     
                 p = File(fName)
-                fileData = [p.sqlData(root=self.root)[h] for h in self.cols]                
+                fileData = [p.info(root=self.root)[h] for h in self.cols]                
                 
                 fileList.append(fileData) # repack to a list
             
@@ -305,7 +322,75 @@ class Manager(object):
             
             print  ''
             
+    def export(self, export_ini, report_file):
+        """ 
+        Copy files from root to a new root.
+        Parameters
+        -----------
+            export_ini : .ini file with migration settings. Created with .prepareExport()
+            report_file : log of the actions
+        """
         
+        fid = TxtFile(report_file,'w')        
+            
+        # 
+        fid.writeln('Export on '+time2str(dt.datetime.now()))    
+        p = ConfigParser()
+        p.optionxform = str
+        
+        p.read(export_ini)
+        newRoot = p.get('Export','dest')
+       
+        fid.writeln('Using settings from '+ export_ini)
+        
+        # create directory tree mapping
+        lines =p.get('Export','mapping').splitlines()
+        
+        mapping = [] # (source,dest) pairs
+        
+        for l in lines:
+            if l:
+                parts = [f.strip() for f in l.split('->')]
+                mapping.append((parts[0],parts[1]))
+
+        sources,dest = zip(*mapping)  
+            
+        # find directories that will not be copied
+        allSources = self.folders()
+        missingSources = [s for s in allSources if s not in sources]
+        
+        fid.writeln('------Ignored directories------')
+        for s in missingSources:
+            fid.writeln(s)
+        
+        fid.writeln('------Starting copy------------')
+        
+        try:
+            for src,dst in mapping:
+                
+                sourceDir = os.path.join(self.root, src)
+                destDir = os.path.join(newRoot, dst)
+                fid.writeln(sourceDir+'->'+destDir)
+                
+                if not os.path.exists(destDir):
+                    self.log.info('Creating '+destDir)
+                    os.makedirs(destDir)
+                    
+                #copy files
+                for name in self.images(src): # file names to copy    
+                    
+                    destFile = join(destDir,name)
+                    if not os.path.exists(destFile):
+                        self.log.debug('Copying '+name+' '+sourceDir+'->'+destDir)
+                        copyfile(join(sourceDir,name),destFile)
+                    else:
+                        self.log.info('SKIPPED (already exists) '+destFile)
+        except :
+            self.log.error('Copy failed', exc_info=True)
+            
+        fid.writeln('-----------All done.----------')
+        fid.close()
+        self.log.info('Export done.')        
         
     def __repr__(self):
         return 'Photo manager\n[root] %s \n[database]%s ' % (self.root,self.dbFile)
@@ -321,23 +406,28 @@ if __name__ == '__main__':
     # TODO: finish descent command-line interface 
     
     #-----------parse command line arguments    
-    parser = argparse.ArgumentParser(description='Photo management toolbox')
-    
-    actions = ['index','copy']    
-    
-    parser.add_argument("root",help = 'root folder')
-    parser.add_argument("action",help = 'action to perform. Possible actions: %s' % str(actions))
-    parser.add_argument("-d","--database", help="database file", default="index.db")
+#    parser = argparse.ArgumentParser(description='Photo management toolbox')
+#    
+#       
+#    
+#    parser.add_argument("root",help = 'root folder')
+#    parser.add_argument("action",help = 'action to perform. Possible actions: %s' % str(actions))
+#    parser.add_argument("-d","--database", help="database file", default="index.db")
+#    parser.add_argument("-r","--report", help="log file for actions", default="report.log")    
+#    
+#    args = parser.parse_args()
+#    print args
+#    
+#
+#    
+#    M = Manager(args.root,dbFile = args.database)
+#    print M
+#    
+#    if args.action == 'index':
+#        M.resetDb()
+#        M.scan()
         
-    
-    args = parser.parse_args()
-    print args
-    
-
-    
-    M = Manager(args.root,dbFile = args.database)
-    print M
-    
-    if args.action == 'index':
-        M.resetDb()
-        M.scan()
+#-----------test code
+    root = r'E:\PRIVATE\Photo\Photo'
+    M = Manager(root,'index.db')
+    M.export('migration_GOOD - Copy.ini','migration.log')
