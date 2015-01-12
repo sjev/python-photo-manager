@@ -7,7 +7,7 @@ import hashlib
 import datetime as dt
 
 from ConfigParser import ConfigParser
-import argparse # command line argument parser
+
 from os.path import join
 import re
 import sqlite3 as lite
@@ -24,6 +24,22 @@ tagCodes = {v: k for k, v in ExifTags.TAGS.iteritems() } # get a reverse diction
 # used time formats
 timeFormats = {'filename': '%Y%m%d_%H%M%S',
                'sql':'%Y-%m-%d %H:%M:%S'}
+
+
+doc = """
+Python Photo Manager 
+
+Usage:
+  photoManager.py sources
+  photoManager.py scan <source>
+  photoManager.py findDuplicates <source>
+  photoManager.py prepareExport <source>
+  photoManager.py export <source> <exportPlan>
+  photoManager.py compare <source> <source>
+ 
+
+"""
+
 
 class TxtFile(file):
     #subclass file to have a more convienient use of writeline
@@ -155,17 +171,11 @@ class Manager(object):
         Create class, optionally provide sqlite file name
         default database is created in memory.
         """
-        
+        self.dbFile = dbFile
         self.log = logging.getLogger('manager')
-        self.log.debug('Class created. Root:%s Database:%s' % (root,dbFile))
+        self.log.debug('Class created. Root:%s Database:%s' % (root,self.dbFile))
         
         self.root = root   
-        if dbFile == ":memory:":
-            self.dbFile = dbFile
-        else:
-            self.dbFile = join(root,dbFile)
-        
-            
         
         self.cols = ['name','path','ext','created','dateTaken','size','camera','hash']
         types =     ['TEXT','TEXT','TEXT','DATETIME','DATETIME','INTEGER','TEXT','TEXT']
@@ -195,6 +205,25 @@ class Manager(object):
         data = self.cur.fetchall()
         return data
     
+    def allFiles(self):
+        """ 
+        get a full list of files and their hashes
+        returns: files, hashes
+        """
+        sql = "SELECT path,name,hash FROM files "
+        res = self.sql(sql)
+        
+        hashes = [r[2] for r in res]
+        files = [join(r[0],r[1]) for r in res]
+        
+        self.log.debug('Found %i files' % len(files))        
+        
+        d = OrderedDict(zip(hashes,[[] for _ in range(len(hashes))]))
+        # create a dictionary with {key:[index0, index1...]}  of duplicates
+        for i,hsh in enumerate(hashes):
+            d[hsh].append(files[i])        
+        
+        return d
     
     def images(self,path):
         """ get images from path. Path must be relative to self.root """
@@ -403,34 +432,98 @@ class Manager(object):
         
 if __name__ == '__main__':
     
-    # TODO: finish descent command-line interface 
+    log = logging.getLogger('root')
     
-    #-----------parse command line arguments    
-#    parser = argparse.ArgumentParser(description='Photo management toolbox')
-#    
-#       
-#    
-#    parser.add_argument("root",help = 'root folder')
-#    parser.add_argument("action",help = 'action to perform. Possible actions: %s' % str(actions))
-#    parser.add_argument("-d","--database", help="database file", default="index.db")
-#    parser.add_argument("-r","--report", help="log file for actions", default="report.log")    
-#    
-#    args = parser.parse_args()
-#    print args
-#    
-#
-#    
-#    M = Manager(args.root,dbFile = args.database)
-#    print M
-#    
-#    if args.action == 'index':
-#        M.resetDb()
-#        M.scan()
+    from docopt import docopt
+
+    opt = docopt(doc)
+    log.debug(opt)
+    
+    
+    # prepare output directory
+    outDir = 'output'
+    if not os.path.exists(outDir):
+        os.mkdir(outDir)
+    
+    # parse settings
+    p = ConfigParser()
+    p.optionxform = str
+    p.read('settings.ini')   
+    
+    #read sources
+    sourceNames = [s.strip() for s in p.get('sources','keys').split(',')]
+    sources = {}    
+    for name in sourceNames:
+        sources[name] = {'root':p.get('source.'+name,'root'),
+                         'db':p.get('source.'+name,'db')}
         
-#-----------test code
-    root = r'D:\Photo_new'
-    M = Manager(root,'photos_new.db')
+    #create manager        
+    if opt['<source>']:   
+        srcName =opt['<source>'][0]
+        M = Manager(sources[srcName]['root'],sources[srcName]['db'])      
     
-    M.resetDb()
-    M.scan()
-    #M.export('migration_GOOD - Copy.ini','migration.log')
+    #----------commands section    
+    if opt['sources'] : 
+        print 'Available sources:', sourceNames
+       
+    if opt['findDuplicates'] :
+        M.findDuplicates(join(outDir,'duplicates_'+srcName+'.txt'))
+       
+    if opt['compare'] :
+        srcName2 = opt['<source>'][1]
+        print 'Comparing ', srcName, ' to ',srcName2
+        
+        # create extra manager
+        M2 =Manager(sources[srcName2]['root'],sources[srcName2]['db']) 
+        
+        # get file lists
+        d1 = M.allFiles()
+        d2 = M2.allFiles()
+        
+        # working with 2 sets A: M B: M2
+        a = d1.keys()
+        b = d2.keys()        
+        uncommon = (set(a)^set(b))
+        a_not_in_b = uncommon&set(a)
+        b_not_in_a = uncommon&set(b)
+        
+        log.debug('a_not_in_b: %i files' % len(a_not_in_b))     
+        log.debug('b_not_in_a: %i files' % len(b_not_in_a))
+        
+        # write to file
+        fName = join(outDir,'compare_%s_to_%s.txt' %(srcName,srcName2))
+        fid = TxtFile(fName,'w')
+        fid.writeln('#------In %s but not in %s' %(srcName,srcName2) )
+        
+        L = []
+        
+        for hsh in a_not_in_b:
+            for f in d1[hsh]:
+                L.append(f)
+                
+        L.sort()
+        for f in L:
+            fid.writeln(f)
+            
+        fid.writeln('#------In %s but not in %s' %(srcName2,srcName) )
+        
+        L = []
+        for hsh in b_not_in_a:
+            for f in d2[hsh]:
+                L.append(f)
+                
+        L.sort()
+        for f in L:
+            fid.writeln(f)
+            
+        log.info('written to ' + fName)    
+        
+        
+    
+    if opt['scan']   :
+        M.resetDb()
+        M.scan()
+     
+    if opt['prepareExport']:
+        M.prepareExport(join(outDir,'exportPlan_'+srcName+'.ini'))
+    
